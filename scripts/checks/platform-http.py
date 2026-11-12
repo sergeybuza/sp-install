@@ -33,19 +33,21 @@ class Assets(HTMLParser):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="https://192.168.10.107")
+    parser.add_argument("--url", default="http://192.168.10.107:8080")
     parser.add_argument("--ca-cert", help="Публичный сертификат самоподписанного сервера")
     args = parser.parse_args()
     origin = urlsplit(args.url)
-    if origin.scheme != "https" or not origin.netloc or origin.username or origin.password:
-        raise ValueError("Нужен HTTPS URL без учётных данных")
+    if origin.scheme not in {"http", "https"} or not origin.netloc or origin.username or origin.password:
+        raise ValueError("Нужен HTTP/HTTPS URL без учётных данных")
+    if origin.scheme == "http" and args.ca_cert:
+        raise ValueError("Публичный сертификат применяется только для HTTPS URL")
     base = args.url.rstrip("/") + "/"
     context = ssl.create_default_context(cafile=args.ca_cert)
 
     class SameOriginRedirect(HTTPRedirectHandler):
         def redirect_request(self, request, response, code, message, headers, new_url):
             target = urlsplit(new_url)
-            if target.scheme != "https" or target.netloc != origin.netloc:
+            if target.scheme != origin.scheme or target.netloc != origin.netloc:
                 raise ValueError("Перенаправление за пределы проверяемого узла запрещено")
             return super().redirect_request(request, response, code, message, headers, new_url)
 
@@ -55,8 +57,8 @@ def main():
     if not password:
         raise ValueError("Задайте SP_ADMIN_PASSWORD в окружении процесса")
 
-    def fetch(path, payload=None, token=None):
-        headers = {}
+    def fetch(path, payload=None, token=None, accept="application/json"):
+        headers = {"Accept": accept}
         data = None
         if payload is not None:
             data = json.dumps(payload).encode()
@@ -69,22 +71,22 @@ def main():
         request = Request(url, data=data, headers=headers)
         with opener.open(request, timeout=30) as response:
             final = urlsplit(response.url)
-            if final.scheme != "https" or final.netloc != origin.netloc:
-                raise ValueError("Ответ перенаправлен за пределы проверяемого HTTPS узла")
+            if final.scheme != origin.scheme or final.netloc != origin.netloc:
+                raise ValueError("Ответ перенаправлен за пределы проверяемого узла")
             return response.status, response.headers.get_content_type(), response.read()
 
-    status, content_type, body = fetch("login")
+    status, content_type, body = fetch("login", accept="text/html")
     if status != 200 or content_type != "text/html":
         raise ValueError("Страница входа не вернула HTML с кодом 200")
-    print("OK: HTTPS, сертификат, HTML /login")
+    print("OK: HTTPS, сертификат, HTML /login" if origin.scheme == "https" else "OK: HTTP, HTML /login")
     assets = Assets()
     assets.feed(body.decode("utf-8"))
     checked = 0
     for asset in dict.fromkeys(assets.urls):
         url = urlsplit(urljoin(base, asset))
-        if url.scheme != "https" or url.netloc != origin.netloc:
+        if url.scheme != origin.scheme or url.netloc != origin.netloc:
             continue
-        status, content_type, _ = fetch(asset)
+        status, content_type, _ = fetch(asset, accept="*/*")
         if status != 200 or content_type == "text/html":
             raise ValueError("Ресурс UI не загрузился в ожидаемом формате")
         checked += 1

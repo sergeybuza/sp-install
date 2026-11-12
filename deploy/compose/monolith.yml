@@ -1,0 +1,187 @@
+# Целевой каталог: /opt/smart-platform/compose/monolith.yml.
+# Секрет БД передаётся в окружении процесса Compose, без файла .env.
+x-sp-environment: &sp-environment
+  SP_SERVICE_TYPE: monolith
+  SP_QUEUE_TYPE: in-memory
+  JS_EVALUATOR: local
+  CACHE_TYPE: caffeine
+  XDG_CACHE_HOME: /usr/share/smart-platform/.cache
+  AI_DISPATCHER_ENABLED: "false"
+  SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/smartplatform?currentSchema=smartplatform
+  SPRING_DATASOURCE_USERNAME: smartplatform
+  SPRING_DATASOURCE_PASSWORD: "${SP_DB_PASSWORD:?Set SP_DB_PASSWORD}"
+
+services:
+  postgres:
+    image: postgres:16
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: smartplatform
+      POSTGRES_USER: smartplatform
+      POSTGRES_PASSWORD: "${SP_DB_PASSWORD:?Set SP_DB_PASSWORD}"
+    volumes:
+      - postgres-data2:/var/lib/postgresql/data
+      - type: bind
+        source: ../config/postgres/10-schema.sql
+        target: /docker-entrypoint-initdb.d/10-schema.sql
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "smartplatform", "-d", "smartplatform"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - smartplatform-net
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "1884:1883"
+    volumes:
+      - type: bind
+        source: ../config/mosquitto/mosquitto.conf
+        target: /mosquitto/config/mosquitto.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - mosquitto-data:/mosquitto/data
+    networks:
+      - smartplatform-net
+
+  # Одноразовая установка; в обычный up -d этот сервис не входит.
+  sp-install:
+    profiles: ["install"]
+    image: registry.gitlab.andromeda.lan/iot/ide/sbercity/sp-node:2.0.0
+    pull_policy: never
+    restart: "no"
+    environment:
+      <<: *sp-environment
+      SP_SERVICE_ID: sp-install
+      INSTALL_SP: "true"
+      LOAD_DEMO: "true"
+    volumes:
+      - sp-node-logs:/var/log/smart-platform
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - smartplatform-net
+
+  sp-back-monolith:
+    image: registry.gitlab.andromeda.lan/iot/ide/sbercity/sp-node:2.0.0
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "9090:8080"
+      - "7070:7070"
+      - "1883:1883"
+      - "8883:8883"
+      - "5683-5688:5683-5688/udp"
+    environment:
+      <<: *sp-environment
+      SP_SERVICE_ID: sp-monolith
+      INSTALL_SP: "false"
+      UPGRADE_SP: "false"
+      MONITORING_ENABLED: "false"
+      METRICS_ENABLED: "false"
+      MQTT_EXT_ENABLED: "true"
+      MQTT_EXT_HOST: mosquitto
+      MQTT_EXT_PORT: "1883"
+      MQTT_EXT_CLIENT_ID: sp-monolith
+      MQTT_EXT_INBOUND_TOPIC_TEMPLATE: to-server/{token}
+      MQTT_EXT_OUTBOUND_TOPIC_TEMPLATE: to-gateway/{token}
+      MQTT_EXT_HANDLER_IDLE_TTL_SECONDS: "1200"
+      MQTT_SP_SUBSCRIPTIONS: v1/gateway/rpc,v1/devices/me/rpc/request/+
+      MQTT_SSL_ENABLED: "true"
+      MQTT_SSL_CREDENTIALS_TYPE: PEM
+      MQTT_SSL_PEM_CERT: /certs/server.crt
+      MQTT_SSL_PEM_KEY: /certs/server.key
+      JAVA_OPTS: >-
+        -Xms512m -Xmx2g
+        -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError
+        -Djavax.net.ssl.trustStore=/certs/cacerts
+    volumes:
+      - sp-node-logs:/var/log/smart-platform
+      - type: bind
+        source: ../certs
+        target: /certs
+        read_only: true
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "10"
+    healthcheck:
+      # Только TCP-liveness; HTTP/API/авторизация проверяются отдельно.
+      test: ["CMD-SHELL", "timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 180s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    networks:
+      - smartplatform-net
+
+  sp-web-ui:
+    image: registry.gitlab.andromeda.lan/iot/ide/sbercity/sp-web-ui:2.0.0
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      HTTP_BIND_ADDRESS: 0.0.0.0
+      HTTP_BIND_PORT: "8080"
+      SP_ENABLE_PROXY: "true"
+      SP_HOST: sp-back-monolith
+      SP_PORT: "8080"
+      LOGGER_LEVEL: info
+      LOG_FOLDER: logs
+      DOCKER_MODE: "true"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          const http = require('http');
+          const req = http.get({host:'127.0.0.1',port:8080,path:'/login',headers:{Accept:'text/html'}},
+          res => { res.resume(); process.exit(res.statusCode === 200 ? 0 : 1); });
+          req.on('error', () => process.exit(1));
+          req.setTimeout(5000, () => req.destroy(new Error('timeout')));
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 180s
+    depends_on:
+      sp-back-monolith:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - smartplatform-net
+
+volumes:
+  postgres-data2:
+    name: sp-postgres-data
+  mosquitto-data:
+    name: sp-mosquitto-data
+  sp-node-logs:
+    name: sp-node-logs
+
+networks:
+  smartplatform-net:
+    driver: bridge

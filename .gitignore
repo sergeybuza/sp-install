@@ -1,0 +1,31 @@
+# Локальное окружение и секреты
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.p12
+*.pfx
+
+# Локальная поставка Docker-образов
+/images/*
+!/images/README.md
+*.tar
+*.tar.gz
+*.tgz
+*.tar.xz
+*.tar.zst
+
+# Рабочие данные, логи и резервные копии
+/data/
+/logs/
+/backups/
+*.log
+
+# Временные файлы редакторов и ОС
+.DS_Store
+*~
+*.swp
+*.swo
+.idea/
+.vscode/

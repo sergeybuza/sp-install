@@ -2,6 +2,8 @@
 
 Целевой ПК: `192.168.10.107`, Ubuntu 26.04.1 LTS, `linux/amd64`. Подготовка Docker и восстановленная история его установки описаны в [отдельной инструкции](ubuntu-26-docker.md): для репозиториев Ubuntu использованы пакеты `docker.io` и `docker-compose-v2`.
 
+После очистки стенда процедура выполнена повторно 2026-11-12; итоговая проверка — `14:20:32 UTC` / `17:20:32` по Москве. [Результаты повторного развёртывания](../review/2026-11-12-redeployment.md) отделены от исторической проверки первого запуска ниже.
+
 Конфигурация [monolith.yml](../../deploy/compose/monolith.yml) содержит четыре постоянно работающих сервиса: PostgreSQL, Mosquitto, ядро `sp-back-monolith` и `sp-web-ui`. Одноразовый `sp-install` включается отдельным профилем. Очередь — `in-memory`, JS — локальный, кеш — `caffeine`. Kafka, Redis, отдельные JS executor и MQTT transport в этом варианте не запускаются.
 
 Имя проекта Compose во всех командах — **`smart-platform`**; менять его при повторном запуске нельзя. Секреты передаются только через окружение, без `.env` и значений паролей в командной строке. Исключение для закрытого TLS-ключа разрешено только на стенде `192.168.10.107`: единственное место хранения — `/opt/smart-platform/certs/server.key`, режим `0600`, владелец `100:101`.
@@ -16,7 +18,8 @@
 ssh engineer@192.168.10.107 'mkdir -p /home/engineer/sp-install-input'
 scp input/images/sp-images-2.0.0.tar deploy/compose/monolith.yml \
   deploy/config/postgres/10-schema.sql deploy/config/mosquitto/mosquitto.conf \
-  scripts/checks/platform-http.py scripts/checks/platform-seed-smoke.py input/ca.crt \
+  scripts/checks/platform-http.py scripts/checks/platform-seed-smoke.py \
+  scripts/remote/install-database.py input/ca.crt \
   engineer@192.168.10.107:/home/engineer/sp-install-input/
 ```
 
@@ -39,6 +42,7 @@ install -m 0644 /home/engineer/sp-install-input/10-schema.sql /opt/smart-platfor
 install -m 0644 /home/engineer/sp-install-input/mosquitto.conf /opt/smart-platform/config/mosquitto/mosquitto.conf
 install -m 0644 /home/engineer/sp-install-input/platform-http.py /opt/smart-platform/checks/platform-http.py
 install -m 0644 /home/engineer/sp-install-input/platform-seed-smoke.py /opt/smart-platform/checks/platform-seed-smoke.py
+install -m 0644 /home/engineer/sp-install-input/install-database.py /opt/smart-platform/checks/install-database.py
 install -m 0644 /home/engineer/sp-install-input/ca.crt /opt/smart-platform/certs/andromeda-ca.crt
 sha256sum /home/engineer/sp-install-input/sp-images-2.0.0.tar
 docker load --quiet --input /home/engineer/sp-install-input/sp-images-2.0.0.tar
@@ -96,7 +100,7 @@ chmod 0644 /opt/smart-platform/certs/server.crt
 openssl verify -CAfile /opt/smart-platform/certs/server.crt /opt/smart-platform/certs/server.crt
 ```
 
-На стенде создан такой сертификат с началом действия `2026-11-12 11:56:59 UTC` и окончанием `2027-11-12`; проверка успешна. Владелец ключа `100:101` соответствует пользователю ядра из образа. Других копий закрытого ключа не создавали. Веб-интерфейс в данной конфигурации работает по HTTP.
+При первом развёртывании создан такой сертификат с началом действия `2026-11-12 11:56:59 UTC` и окончанием `2027-11-12`; проверка успешна. При повторном развёртывании после очистки выпущен новый сертификат, описанный в [инвентаре поставки](../../inventory/releases/smart-platform-2.0.0.md). Владелец ключа `100:101` соответствует пользователю ядра из образа. Других копий закрытого ключа не создавали. Веб-интерфейс в данной конфигурации работает по HTTP.
 
 ## 3. Создать БД и выполнить одноразовый установщик
 
@@ -113,9 +117,9 @@ export SP_DB_PASSWORD="$(openssl rand -hex 32)"
 dc config --quiet
 dc up -d --wait --wait-timeout 120 postgres mosquitto
 dc exec -T postgres psql -U smartplatform -d smartplatform \
-  -c "SELECT schema_name, schema_owner FROM information_schema.schemata WHERE schema_name='smartplatform';"
+  -c "SELECT schema_name, schema_owner FROM information_schema.schemata WHERE schema_name='smartplatform';" </dev/null
 dc exec -T postgres psql -U smartplatform -d smartplatform \
-  -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='smartplatform';"
+  -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='smartplatform';" </dev/null
 ```
 
 До установщика ожидаются схема `smartplatform`, владелец `smartplatform`, число таблиц в ней — `0`. Они создаются через `POSTGRES_DB`, `POSTGRES_USER` и `config/postgres/10-schema.sql` при первом создании кластера. Изменение этих переменных не переинициализирует существующий том.
@@ -123,8 +127,10 @@ dc exec -T postgres psql -U smartplatform -d smartplatform \
 Место выполнения: **стенд, тот же root-сеанс с `SP_DB_PASSWORD`**, только после подтверждения пустой схемы.
 
 ```bash
-dc --profile install run --rm --no-deps sp-install
+python3 /opt/smart-platform/checks/install-database.py
 ```
+
+Скрипт повторно проверяет владельца и пустоту схемы, затем запускает `sp-install` с профилем `install`. stdout/stderr установщика захватываются только в память; наружу выводятся код завершения и наличие маркера успеха. При ошибке или тайм-ауте нужно проверить контейнеры и БД, прежде чем решать о дальнейших действиях. Автоматического повторного запуска нет.
 
 На стенде `dc config --quiet` и запуск PostgreSQL/Mosquitto завершились с кодом `0`; перед установщиком схема и владелец совпали, таблиц было `0`. Установщик с `LOAD_DEMO=true` завершился с кодом `0`, маркер: `Installation finished successfully!`. Демоданные включены явно в Compose.
 
@@ -219,7 +225,7 @@ dc up -d --wait --wait-timeout 180 postgres mosquitto sp-back-monolith sp-web-ui
 dc ps
 ```
 
-## Фактическая проверка результата
+## Историческая проверка первого развёртывания
 
 2026-11-12 на стенде запущены все четыре runtime-сервиса. Первый `up --wait` завершился с кодом `1` из-за отсутствия `Accept: text/html` в проверке UI. После исправления healthcheck в Compose повторный `up --wait` завершился с кодом `0`.
 

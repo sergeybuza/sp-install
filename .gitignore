@@ -8,8 +8,8 @@ secrets/
 *.pfx
 
 # Локальная поставка Docker-образов
-/images/*
-!/images/README.md
+/input/images/*
+!/input/images/README.md
 *.tar
 *.tar.gz
 *.tgz
@@ -20,6 +20,8 @@ secrets/
 /data/
 /logs/
 /backups/
+/reports/*
+!/reports/README.md
 *.log
 
 # Временные файлы редакторов и ОС

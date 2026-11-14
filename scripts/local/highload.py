@@ -178,7 +178,7 @@ class Controller:
             for mount in pub.get("Mounts", []):
                 if mount.get("Destination") == "/etc/pubmqtt/test_sp_local.xlsx":
                     return read_scenario(local_path(self.root, mount["Source"]))
-        source = self.root / "input/highload/sp-emulation/config/test_sp_local.xlsx"
+        source = self.root / "deploy/config/highload/test_sp_local.xlsx"
         return read_scenario(source) if source.exists() else None
 
     def save(self, scenario):

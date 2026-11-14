@@ -1,0 +1,65 @@
+# Конфигурация highload на основе поставки; оригинал остаётся в архиве.
+# Токен получает highload-agent-entrypoint.sh только из окружения.
+agent:
+  logger:
+    write_in_logfile: false # true - писать в лог-файл, false - не писать
+    level_log: 1            #1-INFO, 2-WARNING, 3-DEBUG, 4-ERROR
+#    path_log: ./log/agent.log
+    max_size_log: 2         # Максимальный размер лог-файла в МБ
+    max_backups_log: 30     # Максимальное количество резервных копий лог-файла
+    max_age_log: 10         # Максимальное количество дней хранения лог-файла
+
+  storage:
+    path: ./db/agent.db
+    size: 100
+    buffer:
+      enabled: true         # true - использовать буфер, false - не использовать
+      total_topic: 5000     # Максимальное количество топиков в буфере 1000-1_000_000
+      batch_size: 200       # Размер пакета отправляемых сообщений 10-1000
+      time_send_batch: 500  # Время отправки пакета в миллисекундах, 50-5000
+
+  mqtt:
+    direction: broker
+    access_token_only_via_broker: "" # Значение подставляется entrypoint из AGENT_ACCESS_TOKEN.
+    #----------------------------------------------------------------
+    # ! Данные настройки выставлены по умолчанию, менять крайне не рекомендуется и только при острой необходимости !
+    global_pub_time: 600 # По умолчанию, раз в 600с
+    aperture_percent: 2
+    aperture_threshold: 0.1
+    publish_status_code: true
+    #----------------------------------------------------------------
+    # Шаблоны топиков для публикации и подписки
+    publish_topic_pattern: "to-server/{access_token_only_via_broker}" # Шаблон топиков для сообщений контроллер -> Andromeda.Smart-Platform
+    subscribe_topic_pattern: "to-gateway/{access_token_only_via_broker}" # Шаблон топиков для сообщений контроллер <- Andromeda.Smart-Platform
+    #----------------------------------------------------------------
+
+  global_broker:
+      host: "tcp://127.0.0.1:1884"  # Адрес брокера заменить на свой
+      client_id: "andromeda.smart-platform_agent_global" # Сlient_id = Controller ID заменить на свой
+      keepalive: 15                 # Интервал heartbeat в секундах (быстрый детект тихого обрыва)
+      clean_session: true          # true - для нового клиента, false - для сохранения сессии
+      autoreconnect: true           # true - для автоматического переподключения
+      retry_interval: 5             # Интервал между попытками переподключения в секундах
+      max_retries: 100              # Максимальное количество попыток переподключения
+      pubQoS: 1
+      # tls:
+      #   ca_cert: "configs/agent_iot/ca.crt" # Путь к файлу сертификата CA
+      #   client_cert: "configs/agent_iot/client.crt"
+      #   client_key: "configs/agent_iot/client.key"
+
+  local_broker:
+      host: "tcp://127.0.0.1:1885" # или localhost/ssl
+      client_id: "andromeda.smart-platform_agent_local"
+      keepalive: 15         # Интервал heartbeat в секундах (быстрый детект тихого обрыва)
+      clean_session: true   # true - для нового клиента, false - для сохранения сессии
+      autoreconnect: true   # true - для автоматического переподключения
+      retry_interval: 5     # Интервал между попытками переподключения в секундах
+      max_retries: 100      # Максимальное количество попыток переподключения
+      wildcard:             # Список паттернов wildcard топиков
+        enabled: true
+        patterns:
+          - "/devices/+/controls/+"
+      topic_filters:        # пользовательские правила фильтрации по топику
+        enabled: true
+        ends_with:          # топики заканчивающиеся на
+            - "/on"         # топики заканчивающиеся на /on Управление

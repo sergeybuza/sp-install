@@ -47,6 +47,16 @@ def containers(scenario):
     } for service in load.SERVICES}
 
 
+def publisher(identifier="a" * 64, running=True, restarting=False):
+    return {"id": identifier, "running": running, "restarting": restarting, "labels": {
+        "com.docker.compose.project": load.PROJECT,
+        "com.docker.compose.service": "sp-pubmqtt"}}
+
+
+def publisher_json(*items):
+    return "\n".join(json.dumps(item) for item in items)
+
+
 class ControllerTests(unittest.TestCase):
     def setUp(self):
         parent = ROOT / "reports/highload-tests"
@@ -158,6 +168,97 @@ class ControllerTests(unittest.TestCase):
                 self.control.prepare(2, 3, 2000)
         self.assertEqual(saved, self.control.state_file.read_bytes())
         self.assertEqual(list((self.control.state_dir / "scenarios").iterdir()), [])
+
+    def test_emergency_stop_scopes_and_verifies_publisher_without_reading_environment(self):
+        state = publisher()
+        stopped = publisher(running=False)
+        responses = ["a" * 12, publisher_json(state), "", "a" * 12, publisher_json(stopped)]
+        output = io.StringIO()
+        with patch.object(self.control, "run", side_effect=responses) as run, \
+                patch.object(self.control, "containers", side_effect=AssertionError("full inspect")), \
+                patch.object(self.control, "current", side_effect=AssertionError("scenario read")), \
+                redirect_stdout(output):
+            self.control.emergency_stop_publisher()
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[0], ["docker", "ps", "-aq", "--filter",
+            "label=com.docker.compose.project=" + load.PROJECT, "--filter",
+            "label=com.docker.compose.service=sp-pubmqtt"])
+        self.assertEqual(commands[2], ["docker", "stop", "--time", "0", "a" * 64])
+        self.assertEqual(commands[1][0:3], ["docker", "inspect", "--format"])
+        self.assertNotIn("Env", commands[1][3])
+        self.assertIn("Agent", output.getvalue())
+
+    def test_emergency_stop_validates_all_labels_before_mutation(self):
+        for label, foreign in (("com.docker.compose.project", "other-project"),
+                               ("com.docker.compose.service", "sp-agent")):
+            with self.subTest(label=label):
+                foreign_item = publisher("b" * 64)
+                foreign_item["labels"][label] = foreign
+                with patch.object(self.control, "run", side_effect=["a" * 12 + "\n" + "b" * 12,
+                        publisher_json(publisher(), foreign_item)]) as run:
+                    with self.assertRaises(load.LoadError):
+                        self.control.emergency_stop_publisher()
+                self.assertFalse(any(call.args[0][1] == "stop" for call in run.call_args_list))
+
+    def test_emergency_stop_rejects_malformed_inspect_without_disclosing_contents(self):
+        malformed = publisher()
+        malformed["running"] = "secret-from-docker"
+        for output in ("secret-from-docker", publisher_json(None), publisher_json({}),
+                       publisher_json(malformed), publisher_json(publisher("b" * 64))):
+            with self.subTest(output=output):
+                with patch.object(self.control, "run", side_effect=["a" * 12, output]) as run:
+                    with self.assertRaises(load.LoadError) as error:
+                        self.control.emergency_stop_publisher()
+                self.assertNotIn("secret-from-docker", str(error.exception))
+                self.assertEqual(len(run.call_args_list), 2)
+
+    def test_emergency_stop_handles_recreated_publisher(self):
+        responses = ["a" * 12, publisher_json(publisher()), "",
+                     "b" * 12, publisher_json(publisher("b" * 64)), "", ""]
+        with patch.object(self.control, "run", side_effect=responses) as run, redirect_stdout(io.StringIO()):
+            self.control.emergency_stop_publisher()
+        stopped = [call.args[0][-1] for call in run.call_args_list if call.args[0][1] == "stop"]
+        self.assertEqual(stopped, ["a" * 64, "b" * 64])
+
+    def test_emergency_stop_does_not_claim_success_when_publisher_keeps_restarting(self):
+        def reply(args, **kwargs):
+            if args[1] == "ps":
+                return "a" * 12
+            if args[1] == "inspect":
+                return publisher_json(publisher(running=False, restarting=True))
+            return ""
+        output = io.StringIO()
+        with patch.object(self.control, "run", side_effect=reply) as run, redirect_stdout(output):
+            with self.assertRaises(load.LoadError):
+                self.control.emergency_stop_publisher()
+        self.assertEqual(sum(call.args[0][1] == "stop" for call in run.call_args_list), 3)
+        self.assertEqual(output.getvalue(), "")
+
+    def test_emergency_stop_verifies_empty_project_without_mutation(self):
+        with patch.object(self.control, "run", side_effect=["", ""]) as run, redirect_stdout(io.StringIO()):
+            self.control.emergency_stop_publisher()
+        self.assertEqual([call.args[0][1] for call in run.call_args_list], ["ps", "ps"])
+
+    def test_emergency_stop_cli_bypasses_lock_and_unavailable_scenario(self):
+        self.scenario.path.unlink()
+        self.control.state_dir.mkdir(parents=True, exist_ok=True)
+        self.control.state_file.write_text("invalid JSON")
+        with patch.object(load, "Controller", return_value=self.control), \
+                patch.object(self.control, "lock", side_effect=AssertionError("control lock")), \
+                patch.object(load, "read_scenario", side_effect=AssertionError("scenario read")), \
+                patch.object(self.control, "run", side_effect=["", ""]), redirect_stdout(io.StringIO()):
+            self.assertEqual(load.main(["emergency-stop"]), 0)
+
+    def test_emergency_stop_cli_hides_docker_error_and_returns_failure(self):
+        output = io.StringIO()
+        error_output = io.StringIO()
+        with patch.object(load, "Controller", return_value=self.control), \
+                patch.object(self.control, "run", side_effect=load.LoadError("unknown-secret-from-docker")), \
+                redirect_stdout(output), redirect_stderr(error_output):
+            self.assertEqual(load.main(["emergency-stop"]), 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertNotIn("unknown-secret-from-docker", error_output.getvalue())
+        self.assertIn("Docker", error_output.getvalue())
 
 
 if __name__ == "__main__":

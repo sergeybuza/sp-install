@@ -24,6 +24,7 @@ secrets/
 /outputs/
 /node_modules
 /deploy/config/highload/*.xlsx
+!/deploy/config/highload/test_sp_local.xlsx
 /reports/*
 !/reports/README.md
 *.log

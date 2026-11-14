@@ -76,7 +76,7 @@ services:
       PUBMQTT_CLIENT_ID: sp-highload-mac-pubmqtt
     volumes:
       - type: bind
-        source: ../../input/highload/sp-emulation/config/test_sp_local.xlsx
+        source: ${HIGHLOAD_SCENARIO:-../../input/highload/sp-emulation/config/test_sp_local.xlsx}
         target: /etc/pubmqtt/test_sp_local.xlsx
         read_only: true
         bind:

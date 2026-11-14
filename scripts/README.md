@@ -2,6 +2,14 @@
 
 Скрипты подготовки, установки и проверки добавляются после подтверждения требований поставки.
 
+[local/highload.py](local/highload.py) вызывается через `./highload` из корня
+рабочей копии Mac. Команды `set`, `start`, `stop`, `status`, `check` управляют
+только проектом `sp-highload-mac`, сохраняют выбранный уровень без секретов
+и проверяют топики локального MQTT. Генератор
+[generate-highload-scenario.mjs](local/generate-highload-scenario.mjs) принимает
+`--devices`, `--signals`, `--period-ms`, создаёт отдельный XLSX и сохраняет
+оригинал поставки. [Порядок работы и границы проверки](../docs/installation/highload-mac.md#быстрое-управление-нагрузкой).
+
 [local/start-sp-mcp.sh](local/start-sp-mcp.sh) запускает на рабочем компьютере уже загруженный `smartplatform/sp-mcp:1.0.0`: Streamable HTTP на `127.0.0.1:8000`, режим facade, запись выключена. Требует `SP_MCP_URL`; ключ получает из `SP_MCP_API_KEY` либо запрашивает со скрытым вводом в терминале. Env-файл не создаёт, существующий контейнер не заменяет. На Mac ARM64 проверен реальный запуск.
 
 [checks/sp-mcp-http.py](checks/sp-mcp-http.py) проверяет локальный MCP на `127.0.0.1:8000`: handshake, четыре инструмента facade, поиск и вызов `entity.count`, затем закрытие сессии. На Mac проверено чтение 9 устройств. Скрипт не получает API-ключ, работает через уже запущенный MCP. Процедура и границы — в [инструкции MCP](../docs/installation/sp-mcp-local.md).

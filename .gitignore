@@ -21,9 +21,13 @@ secrets/
 /data/
 /logs/
 /backups/
+/outputs/
+/node_modules
+/deploy/config/highload/*.xlsx
 /reports/*
 !/reports/README.md
 *.log
+__pycache__/
 
 # Временные файлы редакторов и ОС
 .DS_Store

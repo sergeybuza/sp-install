@@ -1,0 +1,5 @@
+#!/bin/sh
+# Управление только локальным Compose-проектом sp-highload-mac.
+set -eu
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec python3 "$project_root/scripts/local/highload.py" "$@"

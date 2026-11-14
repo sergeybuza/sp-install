@@ -320,6 +320,68 @@ class Controller:
                 self.run(["docker", "stop", "--time", "30", item["Id"]], timeout=40)
         print("Нагрузка остановлена; выбранный уровень сохранён.")
 
+    def emergency_stop_publisher(self):
+        """Остановить только PubMQTT, не читая сценарий и не ожидая control.lock.
+
+        Оркестратор обязан прекратить конкурентный set/start: Docker может
+        завершить создание нового контейнера после последней проверки здесь.
+        Agent остаётся включённым и может дослать накопленный буфер.
+        """
+        def docker(args):
+            try:
+                return self.run(["docker", *args], timeout=10)
+            except (LoadError, OSError):
+                # Неизвестные секреты могут попасть в произвольный stderr Docker.
+                raise LoadError("Docker не подтвердил аварийную остановку PubMQTT") from None
+
+        def publishers():
+            ids = docker(["ps", "-aq", "--filter", f"label=com.docker.compose.project={PROJECT}",
+                          "--filter", "label=com.docker.compose.service=sp-pubmqtt"]).split()
+            if not ids:
+                return []
+            if len(ids) != len(set(ids)) or any(not re.fullmatch(r"[0-9a-f]{12,64}", item) for item in ids):
+                raise LoadError("Docker вернул некорректные идентификаторы PubMQTT")
+            # Формат намеренно исключает Config.Env, mounts и содержимое сценария.
+            template = ('{"id":{{json .Id}},"labels":{{json .Config.Labels}},'
+                        '"running":{{json .State.Running}},"restarting":{{json .State.Restarting}}}')
+            output = docker(["inspect", "--format", template, *ids])
+            try:
+                items = [json.loads(line) for line in output.splitlines() if line.strip()]
+                if len(items) != len(ids):
+                    raise ValueError
+                seen = set()
+                for item in items:
+                    identifier = item["id"]
+                    if (not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{64}", identifier)
+                            or identifier in seen or sum(identifier.startswith(value) for value in ids) != 1
+                            or type(item["running"]) is not bool or type(item["restarting"]) is not bool):
+                        raise ValueError
+                    labels = item["labels"]
+                    if (not isinstance(labels, dict)
+                            or labels.get("com.docker.compose.project") != PROJECT
+                            or labels.get("com.docker.compose.service") != "sp-pubmqtt"):
+                        raise LoadError("Docker вернул контейнер вне сервиса PubMQTT проекта highload")
+                    seen.add(identifier)
+                if any(sum(identifier.startswith(value) for identifier in seen) != 1 for value in ids):
+                    raise ValueError
+                return items
+            except (ValueError, TypeError, KeyError):
+                raise LoadError("Docker вернул некорректное состояние PubMQTT") from None
+
+        # Повторный поиск учитывает контейнер, созданный завершавшимся Compose.
+        # Ограничение попыток не даёт скрыть продолжающийся конкурентный start.
+        items = publishers()
+        for _ in range(3):
+            active = [item["id"] for item in items if item["running"] or item["restarting"]]
+            if active:
+                docker(["stop", "--time", "0", *active])
+            items = publishers()
+            if not any(item["running"] or item["restarting"] for item in items):
+                print("PubMQTT остановлен; повторная проверка Docker выполнена. "
+                      "Agent может продолжать отправку буфера до обычного stop.")
+                return
+        raise LoadError("PubMQTT продолжает работать или перезапускаться; аварийная остановка не подтверждена")
+
     def status(self):
         containers = self.containers()
         scenario = self.current(containers)
@@ -349,11 +411,15 @@ def main(argv=None):
     set_parser.add_argument("--period-ms", type=positive, help="Период; по умолчанию сохраняется текущий")
     for action in ("start", "stop", "status"):
         commands.add_parser(action)
+    commands.add_parser("emergency-stop", help="Немедленно остановить только PubMQTT без ожидания control.lock")
     check_parser = commands.add_parser("check", help="Проверить все активные топики в локальном MQTT")
     check_parser.add_argument("--timeout", type=positive, default=10)
     args = parser.parse_args(argv)
     try:
         controller = Controller()
+        if args.action == "emergency-stop":
+            controller.emergency_stop_publisher()
+            return 0
         with controller.lock():
             if args.action == "set":
                 controller.set_level(args.devices, args.signals, args.period_ms)

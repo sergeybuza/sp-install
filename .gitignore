@@ -22,7 +22,8 @@ secrets/
 /logs/
 /backups/
 /outputs/
-/node_modules
+# Содержимое пакетов локальное; ссылка на runtime может храниться в Git.
+/node_modules/
 /deploy/config/highload/*.xlsx
 !/deploy/config/highload/test_sp_local.xlsx
 /reports/*

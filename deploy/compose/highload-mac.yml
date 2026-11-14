@@ -1,0 +1,93 @@
+# Запуск на Mac; платформа находится на отдельном стенде.
+# Секреты поступают только из окружения. Оригиналы поставки не изменяются.
+name: sp-highload-mac
+
+services:
+  mosquitto-local:
+    image: eclipse-mosquitto:2
+    pull_policy: never
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: ../../input/highload/sp-emulation/mosquitto/mosquitto.conf
+        target: /mosquitto/config/mosquitto.conf
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -t '$$SYS/#' -C 1 -W 3 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  sp-agent:
+    image: sp-agent:local
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    read_only: true
+    entrypoint: ["/bin/sh", "/etc/highload/agent-entrypoint.sh"]
+    environment:
+      AGENT_CONFIG_PATH: /etc/highload/agent.yaml
+      AGENT_GLOBAL_BROKER: ${AGENT_GLOBAL_BROKER:-tcp://192.168.10.107:1884}
+      AGENT_LOCAL_BROKER: tcp://mosquitto-local:1883
+      AGENT_GLOBAL_CLIENT_ID: sp-highload-mac-global
+      AGENT_LOCAL_CLIENT_ID: sp-highload-mac-local
+      AGENT_ACCESS_TOKEN: ${AGENT_ACCESS_TOKEN:?Set AGENT_ACCESS_TOKEN in the process environment}
+      AGENT_LOG_LEVEL: "4"
+    volumes:
+      - type: bind
+        source: ../../input/highload/sp-emulation/config/agent.yaml
+        target: /etc/highload/agent.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ../../scripts/local/highload-agent-entrypoint.sh
+        target: /etc/highload/agent-entrypoint.sh
+        read_only: true
+        bind:
+          create_host_path: false
+    # Буфер пробного запуска теряется при остановке контейнера.
+    tmpfs:
+      - /app/db:uid=1000,gid=1000,mode=0700
+    # Сообщения Agent могут содержать токен в имени MQTT-топика.
+    logging:
+      driver: none
+    depends_on:
+      mosquitto-local:
+        condition: service_healthy
+
+  sp-pubmqtt:
+    image: sp-pubmqtt:local
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    read_only: true
+    environment:
+      PUBMQTT_BROKER: tcp://mosquitto-local:1883
+      PUBMQTT_CONFIG: /etc/pubmqtt/test_sp_local.xlsx
+      PUBMQTT_CLIENT_ID: sp-highload-mac-pubmqtt
+    volumes:
+      - type: bind
+        source: ../../input/highload/sp-emulation/config/test_sp_local.xlsx
+        target: /etc/pubmqtt/test_sp_local.xlsx
+        read_only: true
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+    depends_on:
+      mosquitto-local:
+        condition: service_healthy
+      sp-agent:
+        condition: service_started

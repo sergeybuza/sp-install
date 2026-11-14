@@ -10,6 +10,7 @@ secrets/
 # Локальная поставка Docker-образов
 /input/images/*
 !/input/images/README.md
+/input/highload/
 *.tar
 *.tar.gz
 *.tgz
